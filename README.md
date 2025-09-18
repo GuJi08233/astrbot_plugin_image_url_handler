@@ -26,7 +26,7 @@ QQ官方机器人不允许直接发送URL，但机器人的回复中可能包含
 ## 工作原理
 
 1. **消息拦截**：使用 `@filter.on_decorating_result()` 装饰器拦截机器人的所有回复
-2. **URL检测**：使用正则表达式 `r'https?://[^\s\u4e00-\u9fa5\p{P}()]+'` 检测URL
+2. **URL检测**：使用正则表达式检测URL（修复了`\p{P}`错误）
 3. **图片识别**：检查URL路径是否以图片扩展名结尾
 4. **异步下载**：使用 `aiohttp` 异步下载图片到临时目录
 5. **消息链重构**：将原始文本分割，图片部分替换为 `Image` 组件
@@ -62,6 +62,11 @@ self.max_file_size = 10 * 1024 * 1024
 
 # 临时文件目录
 self.temp_dir = "temp_images"
+
+# URL处理配置
+self.block_non_image_urls = True  # 是否屏蔽非图片URL
+self.show_url_blocked_message = True  # 是否显示链接被屏蔽的提示
+self.url_replacement_text = "[链接已屏蔽]"  # 替换被屏蔽URL的文本
 
 # 预设的表情图片URL（可选）
 self.emoji_urls = {

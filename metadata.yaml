@@ -1,5 +1,5 @@
 name: qq_official_url_cleaner
-desc: 为QQ官方API修改发送消息的链接，将机器人回复中的图片URL转换为直接发送的图片，避免消息被屏蔽
-version: v1.0.0
+desc: 为QQ官方API修改发送消息的链接，将机器人回复中的图片URL转换为直接发送的图片，避免消息被屏蔽。修复正则表达式错误，增强图片下载稳定性。
+version: v1.0.1
 author: ave_mujica-saki
 repo: https://github.com/AstrBot-Devs/qq_official_url_cleaner

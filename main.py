@@ -17,6 +17,11 @@ class QQOfficialUrlCleaner(Star):
         self.max_file_size = 10 * 1024 * 1024  # 10MB
         self.temp_dir = "temp_images"
         
+        # 配置选项
+        self.block_non_image_urls = True  # 是否屏蔽非图片URL
+        self.show_url_blocked_message = True  # 是否显示链接被屏蔽的提示
+        self.url_replacement_text = "[链接已屏蔽]"  # 替换被屏蔽URL的文本
+        
         # 预设的表情图片URL配置
         self.emoji_urls = {
             # 可以在这里添加固定的表情图片URL
@@ -42,12 +47,18 @@ class QQOfficialUrlCleaner(Star):
     async def download_image(self, url: str) -> Optional[str]:
         """下载图片到临时目录"""
         try:
-            # 获取文件扩展名
+            # 验证URL格式
             parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                logger.warning(f"无效的URL格式: {url}")
+                return None
+                
+            # 获取文件扩展名
             path = parsed.path.lower()
             ext = os.path.splitext(path)[1]
             
             if ext not in self.image_extensions:
+                logger.info(f"非支持的图片格式: {url}, 扩展名: {ext}")
                 return None
                 
             # 生成临时文件名
@@ -55,26 +66,45 @@ class QQOfficialUrlCleaner(Star):
             filename = f"{uuid.uuid4()}{ext}"
             filepath = os.path.join(self.temp_dir, filename)
             
+            logger.info(f"开始下载图片: {url}")
+            
             # 下载图片
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=30) as response:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                async with session.get(url, headers=headers) as response:
                     if response.status == 200:
                         content_length = response.headers.get('Content-Length')
                         if content_length and int(content_length) > self.max_file_size:
-                            logger.warning(f"图片文件过大: {url}")
+                            logger.warning(f"图片文件过大: {url}, 大小: {content_length} bytes")
+                            return None
+                            
+                        # 验证内容类型
+                        content_type = response.headers.get('Content-Type', '')
+                        if not any(img_type in content_type.lower() for img_type in ['image/', 'application/octet-stream']):
+                            logger.warning(f"非图片内容类型: {url}, Content-Type: {content_type}")
                             return None
                             
                         with open(filepath, 'wb') as f:
                             async for chunk in response.content.iter_chunked(8192):
                                 f.write(chunk)
                         
-                        logger.info(f"成功下载图片: {url} -> {filepath}")
-                        return filepath
+                        # 验证文件是否成功写入
+                        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                            logger.info(f"成功下载图片: {url} -> {filepath} ({os.path.getsize(filepath)} bytes)")
+                            return filepath
+                        else:
+                            logger.error(f"图片文件写入失败或为空: {url}")
+                            
                     else:
                         logger.error(f"下载图片失败: {url}, 状态码: {response.status}")
                         
+        except asyncio.TimeoutError:
+            logger.error(f"下载图片超时: {url}")
         except Exception as e:
-            logger.error(f"下载图片出错: {url}, 错误: {str(e)}")
+            logger.error(f"下载图片出错: {url}, 错误: {type(e).__name__}: {str(e)}")
             
         return None
 
@@ -101,8 +131,8 @@ class QQOfficialUrlCleaner(Star):
             if isinstance(message, Plain):
                 text = message.text
                 
-                # 查找所有URL
-                url_pattern = r'https?://[^\s\u4e00-\u9fa5\p{P}()]+'
+                # 查找所有URL - 修复正则表达式，移除不支持的\p{P}
+                url_pattern = r'https?://[^\s\u4e00-\u9fa5()，。！？；：""''（）【】《》〈〉「」『』〔〕［］｛｝]+'
                 urls = re.findall(url_pattern, text)
                 
                 if not urls:
@@ -133,9 +163,16 @@ class QQOfficialUrlCleaner(Star):
                             # 下载失败，保留原始URL但添加提示
                             new_chain.append(Plain(f"[图片下载失败: {url}]"))
                     else:
-                        # 非图片URL，可以选择屏蔽或保留
-                        # new_chain.append(Plain("[被屏蔽的链接]"))
-                        new_chain.append(Plain(url))  # 保留非图片URL
+                        # 处理非图片URL
+                        if self.block_non_image_urls:
+                            logger.info(f"屏蔽非图片URL: {url}")
+                            if self.show_url_blocked_message:
+                                new_chain.append(Plain(self.url_replacement_text))
+                            # 如果不显示消息，则完全移除URL
+                        else:
+                            # 不屏蔽URL，但QQ官方API可能会拒绝发送
+                            logger.warning(f"尝试发送非图片URL，可能被QQ官方API拒绝: {url}")
+                            new_chain.append(Plain(url))
                     
                     last_pos = url_start + len(url)
                 
