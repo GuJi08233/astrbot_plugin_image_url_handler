@@ -38,6 +38,11 @@ class QQOfficialUrlCleaner(Star):
     def is_image_url(self, url: str) -> bool:
         """检查URL是否为图片URL"""
         try:
+            # 首先检查是否为表情包API链接
+            if self.is_emoji_api_url(url):
+                return True
+                
+            # 然后检查文件扩展名
             parsed = urlparse(url)
             path = parsed.path.lower()
             return any(path.endswith(ext) for ext in self.image_extensions)
@@ -56,6 +61,11 @@ class QQOfficialUrlCleaner(Star):
             # 获取文件扩展名
             path = parsed.path.lower()
             ext = os.path.splitext(path)[1]
+            
+            # 检查是否为表情包API链接（特殊处理）
+            if self.is_emoji_api_url(url):
+                logger.info(f"检测到表情包API链接: {url}")
+                return await self.download_emoji_api_image(url)
             
             if ext not in self.image_extensions:
                 logger.info(f"非支持的图片格式: {url}, 扩展名: {ext}")
@@ -76,6 +86,19 @@ class QQOfficialUrlCleaner(Star):
                 }
                 async with session.get(url, headers=headers) as response:
                     if response.status == 200:
+                        # 处理重定向后的真实URL
+                        final_url = str(response.url)
+                        if final_url != url:
+                            logger.info(f"URL重定向: {url} -> {final_url}")
+                            # 重新检查重定向后的URL扩展名
+                            final_parsed = urlparse(final_url)
+                            final_ext = os.path.splitext(final_parsed.path.lower())[1]
+                            if final_ext and final_ext in self.image_extensions:
+                                ext = final_ext
+                                # 重新生成文件名
+                                filename = f"{uuid.uuid4()}{ext}"
+                                filepath = os.path.join(self.temp_dir, filename)
+                        
                         content_length = response.headers.get('Content-Length')
                         if content_length and int(content_length) > self.max_file_size:
                             logger.warning(f"图片文件过大: {url}, 大小: {content_length} bytes")
@@ -107,6 +130,89 @@ class QQOfficialUrlCleaner(Star):
             logger.error(f"下载图片出错: {url}, 错误: {type(e).__name__}: {str(e)}")
             
         return None
+
+    def is_emoji_api_url(self, url: str) -> bool:
+        """检查是否为表情包API链接"""
+        emoji_api_patterns = [
+            r'https?://[^/]*\.supabase\.co/functions/v1/random/biaoqing',
+            r'https?://[^/]*\.r2\.dev/',
+        ]
+        return any(re.search(pattern, url) for pattern in emoji_api_patterns)
+
+    async def download_emoji_api_image(self, url: str) -> Optional[str]:
+        """专门处理表情包API链接的下载"""
+        try:
+            logger.info(f"开始处理表情包API链接: {url}")
+            
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                
+                async with session.get(url, headers=headers, allow_redirects=True) as response:
+                    if response.status == 200:
+                        # 获取最终的URL（处理重定向）
+                        final_url = str(response.url)
+                        
+                        # 从最终URL中提取文件扩展名
+                        final_parsed = urlparse(final_url)
+                        final_path = final_parsed.path.lower()
+                        ext = os.path.splitext(final_path)[1]
+                        
+                        if not ext or ext not in self.image_extensions:
+                            # 尝试从Content-Type推断扩展名
+                            content_type = response.headers.get('Content-Type', '')
+                            ext = self.get_extension_from_content_type(content_type)
+                            if not ext:
+                                logger.warning(f"无法确定表情包文件扩展名: {final_url}, Content-Type: {content_type}")
+                                return None
+                        
+                        # 生成临时文件名
+                        import uuid
+                        filename = f"{uuid.uuid4()}{ext}"
+                        filepath = os.path.join(self.temp_dir, filename)
+                        
+                        # 验证文件大小
+                        content_length = response.headers.get('Content-Length')
+                        if content_length and int(content_length) > self.max_file_size:
+                            logger.warning(f"表情包文件过大: {url}, 大小: {content_length} bytes")
+                            return None
+                        
+                        # 下载文件
+                        with open(filepath, 'wb') as f:
+                            async for chunk in response.content.iter_chunked(8192):
+                                f.write(chunk)
+                        
+                        # 验证文件
+                        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                            logger.info(f"成功下载表情包: {url} -> {final_url} -> {filepath}")
+                            return filepath
+                        else:
+                            logger.error(f"表情包文件写入失败: {url}")
+                            
+                    else:
+                        logger.error(f"下载表情包失败: {url}, 状态码: {response.status}")
+                        
+        except Exception as e:
+            logger.error(f"下载表情包出错: {url}, 错误: {type(e).__name__}: {str(e)}")
+            
+        return None
+
+    def get_extension_from_content_type(self, content_type: str) -> Optional[str]:
+        """从Content-Type推断文件扩展名"""
+        content_type_map = {
+            'image/jpeg': '.jpg',
+            'image/jpg': '.jpg',
+            'image/png': '.png',
+            'image/gif': '.gif',
+            'image/webp': '.webp',
+            'image/bmp': '.bmp',
+            'image/svg+xml': '.svg',
+            'image/x-icon': '.ico',
+            'image/vnd.microsoft.icon': '.ico',
+        }
+        return content_type_map.get(content_type.lower())
 
     async def cleanup_temp_file(self, filepath: str):
         """清理临时文件"""
